@@ -82,10 +82,17 @@ def batch_inference_topdown(
     dtype=torch.bfloat16,
     flip=False,
 ):
-    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
-        heatmaps = model(imgs.cuda())
+    # Determine device from model parameters or default to cpu
+    device = next(model.parameters()).device if hasattr(model, 'parameters') else torch.device('cpu')
+    
+    # autocast might not work on cpu for bfloat16 in all torch versions, but we'll try
+    # or just disable autocast for CPU
+    context = torch.autocast(device_type="cuda", dtype=dtype) if torch.cuda.is_available() else torch.no_grad()
+    
+    with torch.no_grad():
+        heatmaps = model(imgs.to(device))
         if flip:
-            heatmaps_ = model(imgs.to(dtype).cuda().flip(-1))
+            heatmaps_ = model(imgs.to(dtype).to(device).flip(-1))
             heatmaps = (heatmaps + heatmaps_) * 0.5
         imgs.cpu()
     return heatmaps.cpu()
@@ -287,8 +294,8 @@ def main():
         raise ValueError("invalid input shape")
 
     mp.log_to_stderr()
-    torch._inductor.config.force_fuse_int_mm_with_mul = True
-    torch._inductor.config.use_mixed_mm = True
+    # torch._inductor.config.force_fuse_int_mm_with_mul = True
+    # torch._inductor.config.use_mixed_mm = True
 
     start = time.time()
 
@@ -422,7 +429,7 @@ def main():
         n_pose_batches = (len(pose_imgs) + args.batch_size - 1) // args.batch_size
 
         # use this to tell torch compiler the start of model invocation as in 'flip' mode the tensor output is overwritten
-        torch.compiler.cudagraph_mark_step_begin()  
+        # torch.compiler.cudagraph_mark_step_begin()  
         pose_results = []
         for i in range(n_pose_batches):
             imgs = torch.stack(

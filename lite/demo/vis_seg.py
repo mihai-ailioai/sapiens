@@ -31,21 +31,33 @@ BATCH_SIZE = 32
 
 
 def warmup_model(model, batch_size):
-    imgs = torch.randn(batch_size, 3, 1024, 768).to(dtype=model.dtype).cuda()
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s), torch.no_grad(), torch.autocast(
-        device_type="cuda", dtype=model.dtype
-    ):
-        for i in range(3):
-            model(imgs)
-    torch.cuda.current_stream().wait_stream(s)
+    device = next(model.parameters()).device if hasattr(model, 'parameters') else torch.device('cpu')
+    imgs = torch.randn(batch_size, 3, 1024, 768).to(dtype=model.dtype).to(device)
+    # Autocast and stream logic only for cuda
+    if device.type == 'cuda':
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s), torch.no_grad(), torch.autocast(
+            device_type="cuda", dtype=model.dtype
+        ):
+            for i in range(3):
+                model(imgs)
+        torch.cuda.current_stream().wait_stream(s)
+    else:
+        # Just run forward pass for warmup on CPU/MPS
+        with torch.no_grad():
+            for i in range(3):
+                model(imgs)
+                
     imgs = imgs.detach().cpu().float().numpy()
-    del imgs, s
+    del imgs
+    if device.type == 'cuda':
+        del s
 
 def inference_model(model, imgs, dtype=torch.bfloat16):
+    device = next(model.parameters()).device if hasattr(model, 'parameters') else torch.device('cpu')
     with torch.no_grad():
-        results = model(imgs.to(dtype).cuda())
+        results = model(imgs.to(dtype).to(device))
         imgs.cpu()
 
     results = [r.cpu() for r in results]
@@ -156,8 +168,8 @@ def main():
         raise ValueError("invalid input shape")
 
     mp.log_to_stderr()
-    torch._inductor.config.force_fuse_int_mm_with_mul = True
-    torch._inductor.config.use_mixed_mm = True
+    # torch._inductor.config.force_fuse_int_mm_with_mul = True
+    # torch._inductor.config.use_mixed_mm = True
 
     start = time.time()
 
